@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Every issue an LLM-driven adversarial audit found in Mathlib, with Lean evidence.">
+<title>Mathlib Red-Team Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column — score strip, wins, then a scan-first findings list with a sticky filter bar. */
+:root {
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --sunk: #eef1f5;
+  --ink: #18202c;
+  --muted: #586374;
+  --line: #d9dfe8;
+  --accent: #2b55c9;
+  --accent-soft: #e4ebfb;
+  --crit: #c4262e;
+  --major: #c75a06;
+  --minor: #8d6d00;
+  --nit: #687384;
+  --ok: #1d7a46;
+  --font-ui: "Public Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --radius: 6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11151c; --surface: #191f29; --sunk: #141922; --ink: #e5e9f0; --muted: #9aa5b5;
+    --line: #2a3240; --accent: #86a8ff; --accent-soft: #1e2a45; --crit: #ff6e6e; --major: #ff9c55;
+    --minor: #e3c34d; --nit: #8e99aa; --ok: #5ccf8d; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11151c; --surface: #191f29; --sunk: #141922; --ink: #e5e9f0; --muted: #9aa5b5;
+  --line: #2a3240; --accent: #86a8ff; --accent-soft: #1e2a45; --crit: #ff6e6e; --major: #ff9c55;
+  --minor: #e3c34d; --nit: #8e99aa; --ok: #5ccf8d; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-ui); font-size: 15px;
+  line-height: 1.5; padding-inline: 16px; padding-block: 0 48px;
+}
+.wrap { max-width: 1080px; margin: 0 auto; display: grid; gap: 28px; }
+a { color: var(--accent); }
+code, .mono { font-family: var(--font-mono); font-size: 0.86em; }
+code { background: var(--sunk); padding: 1px 4px; border-radius: 3px; overflow-wrap: anywhere; }
+header.top { padding-block: 32px 0; display: grid; gap: 6px; }
+header.top h1 { margin: 0; font-size: clamp(26px, 4vw, 34px); font-weight: 800; letter-spacing: -0.01em; text-wrap: balance; }
+header.top p { margin: 0; color: var(--muted); max-width: 70ch; }
+header.top p.note { font-size: 14px; border-left: 3px solid var(--major); padding-left: 10px; }
+.meta { font-size: 13px; color: var(--muted); }
+
+.stats { display: flex; flex-wrap: wrap; gap: 10px 28px; padding-block: 14px; border-block: 1px solid var(--line); }
+.stat { display: grid; gap: 0; min-width: 96px; }
+.stat b { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+
+nav.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+nav.tabs button {
+  font: inherit; font-weight: 600; background: none; border: 0; border-bottom: 2px solid transparent;
+  color: var(--muted); padding: 8px 12px; cursor: pointer;
+}
+nav.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+nav.tabs button:focus-visible, .row-head:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+
+h2 { margin: 0; font-size: 18px; font-weight: 700; }
+.legend { display: grid; gap: 6px; font-size: 14px; color: var(--muted); max-width: 75ch; }
+.legend p { margin: 0; }
+
+.filters {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg);
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-block: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.filters input[type="search"] {
+  flex: 1 1 260px; min-width: 0; font: inherit; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: var(--radius); background: var(--surface); color: var(--ink);
+}
+.filters select {
+  font: inherit; font-size: 14px; padding: 7px 8px; border: 1px solid var(--line);
+  border-radius: var(--radius); background: var(--surface); color: var(--ink); max-width: 100%;
+}
+.sevs { display: flex; gap: 6px; flex-wrap: wrap; }
+.sevs label {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 600;
+  padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); cursor: pointer;
+}
+.sevs input { margin: 0; accent-color: var(--accent); }
+.count { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.list { display: grid; gap: 6px; }
+.row {
+  background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--sevc, var(--nit));
+  border-radius: var(--radius); min-width: 0;
+}
+.row[data-sev="CRITICAL"] { --sevc: var(--crit); }
+.row[data-sev="MAJOR"] { --sevc: var(--major); }
+.row[data-sev="MINOR"] { --sevc: var(--minor); }
+.row[data-sev="NIT"] { --sevc: var(--nit); }
+.row-head {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline;
+  padding: 10px 12px; cursor: pointer; width: 100%; text-align: left; background: none; border: 0;
+  font: inherit; color: inherit;
+}
+.pill {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--sevc); border: 1px solid var(--sevc);
+  border-radius: 999px; padding: 1px 7px; white-space: nowrap;
+}
+.decl { font-family: var(--font-mono); font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.where { grid-column: 2 / 4; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.tags { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.tag { font-size: 12px; color: var(--muted); background: var(--sunk); border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+.tag.status-pr-open, .tag.status-landed { color: var(--ok); }
+.tag.status-suspected { color: var(--minor); }
+.summary { grid-column: 2 / 4; font-size: 14px; color: var(--ink); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.row.open .summary { display: none; }
+.body { display: none; padding: 0 12px 14px 12px; gap: 12px; }
+.row.open .body { display: grid; }
+.field { display: grid; gap: 3px; min-width: 0; }
+.field h3 { margin: 0; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+.field p { margin: 0; max-width: 85ch; overflow-wrap: anywhere; }
+.field pre {
+  margin: 0; font-family: var(--font-mono); font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--sunk); border-radius: 4px; padding: 8px 10px; max-height: 320px; overflow: auto;
+}
+.links { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; align-items: center; }
+.links button {
+  font: inherit; font-size: 13px; background: none; border: 1px solid var(--line); border-radius: 4px;
+  color: var(--ink); padding: 2px 8px; cursor: pointer;
+}
+.more { justify-self: center; font: inherit; font-weight: 600; padding: 8px 18px; border-radius: var(--radius);
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.empty { padding: 24px; text-align: center; color: var(--muted); background: var(--surface); border: 1px dashed var(--line); border-radius: var(--radius); }
+.empty button { font: inherit; color: var(--accent); background: none; border: 0; cursor: pointer; text-decoration: underline; }
+
+table.files { width: 100%; border-collapse: collapse; font-size: 14px; }
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+table.files th, table.files td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+table.files th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 700; }
+table.files td.num { font-variant-numeric: tabular-nums; text-align: right; }
+table.files td.path { font-family: var(--font-mono); font-size: 13px; overflow-wrap: anywhere; }
+table.files tr:last-child td { border-bottom: 0; }
+.linkish { font: inherit; background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; text-align: left; font-family: var(--font-mono); font-size: 13px; overflow-wrap: anywhere; }
+.status-line { color: var(--muted); }
+@media (max-width: 600px) {
+  .row-head { grid-template-columns: auto minmax(0, 1fr); }
+  .tags { grid-column: 1 / 3; justify-content: flex-start; }
+  .where, .summary { grid-column: 1 / 3; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>Mathlib Red-Team Ledger</h1>
+    <p>Every issue an adversarial audit found in Mathlib, one declaration at a time. Each finding was checked in Lean,
+      and every critical or major one was also put to a second model (Astra) to try to refute it.</p>
+    <p class="note">These findings are LLM-generated (Claude, with GPT as the second opinion) and have not been reviewed by Mathlib maintainers.
+      Treat each one as a claim to check. The raw data is <a href="findings.json">findings.json</a>.</p>
+    <div class="meta" id="meta">Loading the ledger…</div>
+  </header>
+
+  <section class="stats" id="stats" aria-label="Score"></section>
+
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button role="tab" id="tab-findings" aria-selected="true" data-view="findings">Findings</button>
+    <button role="tab" id="tab-wins" aria-selected="false" data-view="wins">Critical &amp; major</button>
+    <button role="tab" id="tab-files" aria-selected="false" data-view="files">Audited files</button>
+    <button role="tab" id="tab-about" aria-selected="false" data-view="about">How to read this</button>
+  </nav>
+
+  <section id="view-findings" class="view">
+    <div class="filters" role="search">
+      <input type="search" id="q" placeholder="Search declarations, files, claims, patterns…" aria-label="Search findings">
+      <div class="sevs" id="sevs" aria-label="Severity"></div>
+      <select id="status" aria-label="Status">
+        <option value="">Any status</option>
+        <option value="wins">Confirmed critical or major</option>
+        <option value="confirmed">Confirmed</option>
+        <option value="suspected">Suspected (not yet in Lean)</option>
+        <option value="pr-open">PR open</option>
+        <option value="landed">Landed</option>
+      </select>
+      <select id="cat" aria-label="Category"><option value="">Any category</option></select>
+      <select id="area" aria-label="Mathlib area"><option value="">Any area</option></select>
+      <select id="sort" aria-label="Sort">
+        <option value="sev">Sort: severity</option>
+        <option value="file">Sort: file</option>
+        <option value="new">Sort: newest</option>
+      </select>
+      <span class="count" id="count" aria-live="polite"></span>
+    </div>
+    <div class="list" id="list"></div>
+  </section>
+
+  <section id="view-wins" class="view" hidden>
+    <div class="list" id="wins"></div>
+  </section>
+
+  <section id="view-files" class="view" hidden>
+    <div class="table-wrap">
+      <table class="files">
+        <thead><tr><th>File</th><th>Audited</th><th class="num">Declarations</th><th class="num">Findings</th></tr></thead>
+        <tbody id="files"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="view-about" class="view legend" hidden>
+    <h2>Severity</h2>
+    <p><b style="color:var(--crit)">Critical</b>: the library says something it does not mean, such as a wrong definition or a junk value that makes a statement hold for the wrong reason.</p>
+    <p><b style="color:var(--major)">Major</b>: a second definition or construction of something Mathlib already has, made for no good reason (shown equal by <code>rfl</code> in Lean).</p>
+    <p><b style="color:var(--minor)">Minor</b>: a restated or duplicated lemma, an assumption stronger than needed, missing API, a misnamed lemma, or a wrong docstring.</p>
+    <p><b style="color:var(--nit)">Nit</b>: naming style, missing docstrings, leftovers and other hygiene.</p>
+    <h2>Status</h2>
+    <p><b>Confirmed</b> findings come with Lean evidence: a probe that compiles, a probe that fails as expected, or a measured fact about the source. <b>Suspected</b> findings are a model's claim not yet checked in Lean.</p>
+    <p>The "Critical &amp; major" tab lists the confirmed critical and major findings. Only the critical finding and a first batch of majors became draft PRs; the rest are recorded here so they do not crowd the Mathlib PR queue.</p>
+    <h2>Evidence</h2>
+    <p>Probe paths such as <code>hunts/…/probe1.lean</code> refer to the red team's working files. Source links open the file at the Mathlib commit the audit used.</p>
+  </section>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const REPO = "https://github.com/leanprover-community/mathlib4";
+  const SEVS = ["CRITICAL", "MAJOR", "MINOR", "NIT"];
+  const SEV_LABEL = { CRITICAL: "Critical", MAJOR: "Major", MINOR: "Minor", NIT: "Nit" };
+  const WIN = new Set(["confirmed", "pr-open", "landed", "superseded"]);
+  const PAGE = 60;
+  let data = null, shown = PAGE, current = [];
+  const $ = (id) => document.getElementById(id);
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function md(s) { return esc(s).replace(/`([^`]+)`/g, "<code>$1</code>"); }
+  function area(file) { const p = (file || "").split("/"); return p[0] === "Mathlib" && p.length > 2 ? p[1] : (p[0] || "other"); }
+  function srcLink(f) {
+    if (!f.file || !/\.lean$/.test(f.file)) return "";
+    const ref = f.commit || "master";
+    return REPO + "/blob/" + ref + "/" + f.file + (f.line ? "#L" + f.line : "");
+  }
+
+  function rowHTML(f, open) {
+    const tags = [esc(f.cat), f.status !== "confirmed" ? '<span class="tag status-' + esc(f.status) + '">' + esc(f.status) + "</span>" : ""]
+      .filter(Boolean).map((t) => t.startsWith("<span") ? t : '<span class="tag">' + t + "</span>").join("");
+    const where = esc(f.file) + (f.line ? ":" + f.line : "");
+    const src = srcLink(f);
+    const pr = f.pr ? '<a href="' + REPO + "/pull/" + f.pr + '" target="_blank" rel="noopener">PR #' + f.pr + "</a>" : "";
+    const astra = f.astraV ? '<div class="field"><h3>Astra (second opinion): ' + esc(f.astraV) + "</h3><p>" + md(f.astraS) + "</p></div>" : "";
+    const ev = f.ev ? '<div class="field"><h3>Lean evidence' + (f.evr ? " · " + esc(f.evr) : "") + "</h3><pre>" + esc(f.ev) + "</pre></div>" : "";
+    const res = f.res ? '<div class="field"><h3>Resolution</h3><p>' + md(f.res) + "</p></div>" : "";
+    return '<article class="row' + (open ? " open" : "") + '" data-sev="' + esc(f.sev) + '" id="' + esc(f.id) + '">' +
+      '<button class="row-head" aria-expanded="' + (open ? "true" : "false") + '" data-id="' + esc(f.id) + '">' +
+      '<span class="pill">' + esc(SEV_LABEL[f.sev] || f.sev) + "</span>" +
+      '<span class="decl">' + esc(f.decl) + "</span>" +
+      '<span class="tags">' + tags + "</span>" +
+      '<span class="where">' + where + (f.pattern ? " · " + esc(f.pattern) : "") + "</span>" +
+      '<span class="summary">' + md(f.claim) + "</span>" +
+      "</button>" +
+      '<div class="body">' +
+      '<div class="field"><h3>Claim</h3><p>' + md(f.claim) + "</p></div>" +
+      (f.fix ? '<div class="field"><h3>Suggested fix</h3><p>' + md(f.fix) + "</p></div>" : "") +
+      ev + astra + res +
+      '<div class="links">' + (src ? '<a href="' + src + '" target="_blank" rel="noopener">Source</a>' : "") + pr +
+      '<span class="mono status-line">' + esc(f.id) + " · " + esc(f.at) + '</span><button data-copy="' + esc(f.id) + '">Copy ID</button></div>' +
+      "</div></article>";
+  }
+
+  function filters() {
+    const sevs = new Set(SEVS.filter((s) => $("sev-" + s).checked));
+    return { q: $("q").value.trim().toLowerCase(), sevs, status: $("status").value, cat: $("cat").value, area: $("area").value, sort: $("sort").value };
+  }
+
+  function apply(keepShown) {
+    if (!data) return;
+    const F = filters();
+    const terms = F.q ? F.q.split(/\s+/) : [];
+    current = data.findings.filter((f) => {
+      if (!F.sevs.has(f.sev)) return false;
+      if (F.status === "wins") { if (!((f.sev === "CRITICAL" || f.sev === "MAJOR") && WIN.has(f.status))) return false; }
+      else if (F.status && f.status !== F.status) return false;
+      if (F.cat && f.cat !== F.cat) return false;
+      if (F.area && area(f.file) !== F.area) return false;
+      if (terms.length) {
+        const hay = (f.decl + " " + f.file + " " + f.claim + " " + f.pattern + " " + f.id).toLowerCase();
+        for (const t of terms) if (!hay.includes(t)) return false;
+      }
+      return true;
+    });
+    if (F.sort === "file") current.sort((a, b) => a.file.localeCompare(b.file) || (a.line || 0) - (b.line || 0));
+    else if (F.sort === "new") current.sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+    if (!keepShown) shown = PAGE;
+    render();
+  }
+
+  function render(openId) {
+    const list = $("list");
+    $("count").textContent = current.length.toLocaleString() + " of " + data.findings.length.toLocaleString() + " findings";
+    if (!current.length) {
+      list.innerHTML = '<div class="empty">No findings match these filters. <button id="clear">Clear filters</button></div>';
+      $("clear").onclick = clearFilters;
+      return;
+    }
+    const slice = current.slice(0, shown);
+    list.innerHTML = slice.map((f) => rowHTML(f, f.id === openId)).join("") +
+      (current.length > shown ? '<button class="more" id="more">Show ' + Math.min(PAGE, current.length - shown) + " more</button>" : "");
+    const more = $("more");
+    if (more) more.onclick = () => { shown += PAGE; render(); };
+  }
+
+  function clearFilters() {
+    $("q").value = ""; $("status").value = ""; $("cat").value = ""; $("area").value = ""; $("sort").value = "sev";
+    SEVS.forEach((s) => { $("sev-" + s).checked = true; });
+    apply();
+  }
+
+  function toggleRow(btn) {
+    const row = btn.closest(".row");
+    const open = !row.classList.contains("open");
+    row.classList.toggle("open", open);
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  function copy(text, btn) {
+    const done = () => { const t = btn.textContent; btn.textContent = "Copied"; setTimeout(() => { btn.textContent = t; }, 1200); };
+    try {
+      navigator.clipboard.writeText(text).then(done, () => selectText(btn));
+    } catch (e) { selectText(btn); }
+  }
+  function selectText(btn) {
+    const span = btn.previousElementSibling;
+    if (!span) return;
+    const r = document.createRange(); r.selectNodeContents(span);
+    const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+  }
+
+  function showView(view) {
+    document.querySelectorAll("nav.tabs button").forEach((b) => b.setAttribute("aria-selected", b.dataset.view === view ? "true" : "false"));
+    document.querySelectorAll(".view").forEach((v) => { v.hidden = v.id !== "view-" + view; });
+  }
+
+  function renderWins() {
+    const wins = data.findings.filter((f) => (f.sev === "CRITICAL" || f.sev === "MAJOR") && WIN.has(f.status));
+    $("wins").innerHTML = wins.map((f) => rowHTML(f, false)).join("") || '<div class="empty">No confirmed critical or major findings yet.</div>';
+  }
+
+  function renderFiles() {
+    $("files").innerHTML = data.audits.map((a) =>
+      '<tr><td class="path"><button class="linkish" data-file="' + esc(a.file) + '">' + esc(a.file) + "</button></td>" +
+      "<td>" + esc(a.at) + '</td><td class="num">' + a.decls + '</td><td class="num">' + a.n + "</td></tr>").join("");
+  }
+
+  function renderStats() {
+    const s = data.score;
+    const items = [[s.findings, "findings"], [s.wins, "confirmed critical or major"], [s.critical, "critical"], [s.landed, "landed in Mathlib"], [s.filesAudited, "files audited"], [s.losses, "claims refuted"]];
+    $("stats").innerHTML = items.map(([n, l]) => '<div class="stat"><b>' + Number(n).toLocaleString() + "</b><span>" + l + "</span></div>").join("");
+    $("meta").textContent = "Updated " + data.generated + ". " + s.filesTouched + " files have at least one finding.";
+  }
+
+  function fillSelects() {
+    $("sevs").innerHTML = SEVS.map((s) => '<label><input type="checkbox" id="sev-' + s + '" checked> ' + SEV_LABEL[s] + "</label>").join("");
+    const cats = [...new Set(data.findings.map((f) => f.cat))].filter(Boolean).sort();
+    $("cat").innerHTML += cats.map((c) => '<option value="' + esc(c) + '">' + esc(c) + "</option>").join("");
+    const counts = {};
+    data.findings.forEach((f) => { const a = area(f.file); counts[a] = (counts[a] || 0) + 1; });
+    $("area").innerHTML += Object.keys(counts).sort().map((a) => '<option value="' + esc(a) + '">' + esc(a) + " (" + counts[a] + ")</option>").join("");
+  }
+
+  function openFromHash() {
+    const h = decodeURIComponent((location.hash || "").slice(1));
+    if (!h) return;
+    if (h === "wins" || h === "files" || h === "about" || h === "findings") { showView(h); return; }
+    const f = data.findings.find((x) => x.id === h);
+    if (!f) return;
+    showView("findings");
+    clearFilters();
+    $("q").value = f.id; apply();
+    render(f.id);
+    const el = document.getElementById(f.id);
+    if (el) el.scrollIntoView({ block: "start" });
+  }
+
+  document.addEventListener("click", (e) => {
+    const head = e.target.closest(".row-head");
+    if (head) { toggleRow(head); return; }
+    const c = e.target.closest("[data-copy]");
+    if (c) { copy(c.dataset.copy, c); return; }
+    const tab = e.target.closest("nav.tabs button");
+    if (tab) { showView(tab.dataset.view); return; }
+    const file = e.target.closest("[data-file]");
+    if (file) { clearFilters(); $("q").value = file.dataset.file; $("sort").value = "file"; showView("findings"); apply(); }
+  });
+
+  let t = null;
+  function debounced() { clearTimeout(t); t = setTimeout(() => apply(), 120); }
+
+  fetch("findings.json").then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }).then((d) => {
+    data = d;
+    fillSelects();
+    renderStats();
+    renderWins();
+    renderFiles();
+    $("q").addEventListener("input", debounced);
+    ["status", "cat", "area", "sort"].forEach((id) => $(id).addEventListener("change", () => apply()));
+    $("sevs").addEventListener("change", () => apply());
+    apply();
+    openFromHash();
+    window.addEventListener("hashchange", openFromHash);
+  }).catch(() => {
+    $("meta").textContent = "The findings data could not be loaded. Reload the page to try again.";
+  });
+})();
+</script>
+</body>
+</html>
